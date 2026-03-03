@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>Ultimate Tsum Game</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: 'Helvetica', sans-serif; user-select: none; touch-action: none; }
+        #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+        canvas { display: block; border-left: 2px solid #333; border-right: 2px solid #333; }
+        #effect-canvas { position: absolute; top: 0; pointer-events: none; z-index: 5; }
+        #ui { position: absolute; top: 20px; left: 20px; z-index: 10; color: white; pointer-events: none; }
+        #score { font-size: 32px; font-weight: bold; text-shadow: 0 0 10px rgba(0,0,0,0.8); }
+        .difficulty { font-size: 12px; color: #ffeb3b; background: rgba(0,0,0,0.5); padding: 2px 8px; border-radius: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div id="score">0</div>
+        <div class="difficulty">HARD MODE: 7 COLORS + IRON BALL</div>
+    </div>
+    
+    <div id="container">
+        <canvas id="effect-canvas"></canvas>
+    </div>
+
+    <script>
+        const { Engine, Render, Runner, Bodies, Composite, Query, Events } = Matter;
+
+        // --- 設定 ---
+        const WIDTH = Math.min(window.innerWidth, 400);
+        const HEIGHT = window.innerHeight;
+        const TSUM_RAD = 23;
+        const COLORS = ['#FF5252', '#42A5F5', '#66BB6A', '#FFCA28', '#AB47BC', '#26C6DA', '#FFA726'];
+        let score = 0;
+
+        // --- 1. エンジン初期化 ---
+        const engine = Engine.create({ gravity: { y: 1.5 } });
+        const render = Render.create({
+            element: document.getElementById('container'),
+            engine: engine,
+            options: { width: WIDTH, height: HEIGHT, wireframes: false, background: '#121212' }
+        });
+
+        // 壁の作成
+        const wallOptions = { isStatic: true, render: { fillStyle: '#222' } };
+        const walls = [
+            Bodies.rectangle(WIDTH/2, HEIGHT + 25, WIDTH, 50, wallOptions), // 底
+            Bodies.rectangle(-25, HEIGHT/2, 50, HEIGHT, wallOptions),      // 左
+            Bodies.rectangle(WIDTH + 25, HEIGHT/2, 50, HEIGHT, wallOptions) // 右
+        ];
+        Composite.add(engine.world, walls);
+
+        // ツム生成
+        function spawn(x, y, isIron = false) {
+            if (isIron) {
+                return Bodies.circle(x, y, TSUM_RAD * 1.2, {
+                    label: 'iron', restitution: 0.1, density: 0.5,
+                    render: { fillStyle: '#333', strokeStyle: '#000', lineWidth: 4 }
+                });
+            }
+            const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+            return Bodies.circle(x, y, TSUM_RAD, {
+                label: 'tsum', restitution: 0.4, friction: 0.005,
+                colorType: color, render: { fillStyle: color, strokeStyle: '#fff', lineWidth: 2 }
+            });
+        }
+
+        // 初期配置
+        for(let i=0; i<40; i++) {
+            Composite.add(engine.world, spawn(Math.random()*WIDTH, -HEIGHT, Math.random() < 0.1));
+        }
+
+        // --- 2. エフェクト（パーティクル） ---
+        const efCanvas = document.getElementById('effect-canvas');
+        const ctx = efCanvas.getContext('2d');
+        efCanvas.width = WIDTH; efCanvas.height = HEIGHT;
+        let particles = [];
+
+        function createBurst(x, y, color) {
+            for(let i=0; i<12; i++) {
+                particles.push({
+                    x, y, color,
+                    vx: (Math.random()-0.5)*12, vy: (Math.random()-0.5)*12,
+                    life: 1.0, size: Math.random()*5 + 2
+                });
+            }
+        }
+
+        // --- 3. 操作ロジック ---
+        let selected = [];
+        let dragging = false;
+
+        const getPos = (e) => {
+            const rect = efCanvas.getBoundingClientRect();
+            const t = e.touches ? e.touches[0] : e;
+            return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+        };
+
+        const handleStart = () => { dragging = true; selected = []; };
+        const handleEnd = () => {
+            dragging = false;
+            if (selected.length >= 3) {
+                const bonus = Math.floor(selected.length * 1.5);
+                score += selected.length * 100 * bonus;
+                document.getElementById('score').innerText = score.toLocaleString();
+                
+                selected.forEach(b => {
+                    createBurst(b.position.x, b.position.y, b.colorType);
+                    createBurst(b.position.x, b.position.y, '#fff');
+                    Composite.remove(engine.world, b);
+                    setTimeout(() => {
+                        Composite.add(engine.world, spawn(Math.random()*WIDTH, -50, Math.random() < 0.15));
+                    }, 300 + Math.random()*500);
+                });
+            } else {
+                selected.forEach(b => b.render.opacity = 1.0);
+            }
+            selected = [];
+        };
+
+        const handleMove = (e) => {
+            if (!dragging) return;
+            const pos = getPos(e);
+            const bodies = Composite.allBodies(engine.world);
+            const hit = Query.point(bodies, pos)[0];
+
+            if (hit && hit.label === 'tsum' && !selected.includes(hit)) {
+                if (selected.length === 0 || (hit.colorType === selected[selected.length-1].colorType && Math.hypot(hit.position.x-selected[selected.length-1].position.x, hit.position.y-selected[selected.length-1].position.y) < 65)) {
+                    hit.render.opacity = 0.4;
+                    selected.push(hit);
+                    // 繋いだ時の小さな火花
+                    createBurst(pos.x, pos.y, '#fff');
+                }
+            }
+        };
+
+        window.addEventListener('mousedown', handleStart); window.addEventListener('touchstart', handleStart);
+        window.addEventListener('mouseup', handleEnd); window.addEventListener('touchend', handleEnd);
+        window.addEventListener('mousemove', handleMove); window.addEventListener('touchmove', handleMove);
+
+        // --- 4. 描画 & 物理ループ ---
+        Render.run(render);
+        Runner.run(Runner.create(), engine);
+
+        function draw() {
+            ctx.clearRect(0, 0, WIDTH, HEIGHT);
+            
+            // パーティクル
+            particles = particles.filter(p => p.life > 0);
+            particles.forEach(p => {
+                p.x += p.vx; p.y += p.vy; p.vy += 0.4; p.life -= 0.02;
+                ctx.globalAlpha = p.life;
+                ctx.fillStyle = p.color;
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill();
+            });
+
+            // 繋いでいる線
+            if (selected.length > 1) {
+                ctx.globalAlpha = 0.6;
+                ctx.strokeStyle = "white";
+                ctx.lineWidth = 8;
+                ctx.lineCap = "round";
+                ctx.lineJoin = "round";
+                ctx.beginPath();
+                ctx.moveTo(selected[0].position.x, selected[0].position.y);
+                selected.forEach(p => ctx.lineTo(p.position.x, p.position.y));
+                ctx.stroke();
+            }
+            requestAnimationFrame(draw);
+        }
+        draw();
+    </script>
+</body>
+</html>
